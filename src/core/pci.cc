@@ -5,6 +5,10 @@
 #include "osutils.h"
 #include "options.h"
 #include "sysfs.h"
+#include "scsi.h"
+#include "disk.h"
+#include "cdrom.h"
+#include <glob.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -1220,6 +1224,69 @@ bool scan_pci(hwNode & n)
             }
         }
 	add_device_tree_info(*device, devices[i]->d_name);
+
+        glob_t entries;
+        if (glob((string(devices[i]->d_name)+"/ata*/host*/target*/*").c_str(), 0, NULL, &entries) == 0)
+        {
+          size_t j;
+          for(j=0; j < entries.gl_pathc; j++)
+          {
+            string path = entries.gl_pathv[j];
+            int type = -1;
+            if(exists(path+"/type"))
+            {
+              FILE* typeFile = fopen((path+"/type").c_str(), "r");
+              fscanf(typeFile, "%d", &type);
+              fclose(typeFile);
+            }
+            hwNode child = get_scsi_device(type);
+            child.setDescription(string(scsi_type(type)));
+            
+            dirent **blocks = NULL;
+            int nBlocks = scandir((path+"/block").c_str(), &blocks, NULL, alphasort);
+            if(nBlocks>0)
+            {
+              child.setLogicalName("/dev/"+string(blocks[nBlocks-1]->d_name));
+            }
+            free(blocks);
+            
+            if(exists(path+"/inquiry"))
+            {
+              FILE* inqFile = fopen((path+"/inquiry").c_str(), "rb");
+              uint8_t rsp_buff[0x50];
+              unsigned int len = fread(rsp_buff, 1, 0x50, inqFile);
+              parse_inq_1(rsp_buff, len, child);
+              fclose(inqFile);
+            }
+            if(exists(path+"/vpd_pg80"))
+            {
+              FILE* inqFile = fopen((path+"/vpd_pg80").c_str(), "rb");
+              uint8_t rsp_buff[0x50];
+              unsigned int len = fread(rsp_buff, 1, 0x50, inqFile);
+              parse_inq_2(rsp_buff, len, child);
+              fclose(inqFile);
+            }
+            
+            if(child.getVendor() == "ATA")
+            {
+              child.setDescription("ATA " + child.getDescription());
+              child.setVendor("");
+            }
+            else
+            {
+              child.setDescription("SCSI " + child.getDescription());
+              child.addHint("bus.icon", string("scsi"));
+            }
+            if ((type == 4) || (type == 5))
+              scan_cdrom(child);
+            if ((type == 0) || (type == 7) ||
+                (type == 14) || (type == 20))
+              scan_disk(child);
+            
+            device->addChild(child);
+          }
+          globfree(&entries);
+        }
 
         result = true;
       }

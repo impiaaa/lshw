@@ -238,7 +238,7 @@ int lun = -1)
 }
 
 
-static const char *scsi_type(int type)
+const char *scsi_type(int type)
 {
   switch (type)
   {
@@ -440,6 +440,29 @@ static u_int16_t decode_word(void *ptr)
   return (p[0] << 8) + p[1];
 }
 
+void parse_inq_1(uint8_t *rsp_buff, unsigned int len, hwNode & node)
+{
+  unsigned ansiversion = rsp_buff[2] & 0x7;
+
+  if (rsp_buff[1] & 0x80)
+    node.addCapability("removable", "support is removable");
+
+  node.setVendor(string((char *)rsp_buff + 8, 8));
+  if (len > 16)
+    node.setProduct(string((char *)rsp_buff + 16, 16));
+  if (len > 32)
+    node.setVersion(string((char *)rsp_buff + 32, 4));
+
+  if (ansiversion)
+    node.setConfig("ansiversion", tostring(ansiversion));
+}
+
+void parse_inq_2(uint8_t *rsp_buff, unsigned int len, hwNode & node)
+{
+  uint8_t _len = rsp_buff[3];
+  if (_len > 0)
+    node.setSerial(hw::strip(string((char *)rsp_buff + 4, _len)));
+}
 
 static bool do_inquiry(int sg_fd,
 hwNode & node)
@@ -469,26 +492,12 @@ hwNode & node)
   if (len != ((unsigned int) rsp_buff[4] + 5))
     return false;                                 // twin INQUIRYs yield different lengths
 
-  unsigned ansiversion = rsp_buff[2] & 0x7;
-
-  if (rsp_buff[1] & 0x80)
-    node.addCapability("removable", "support is removable");
-
-  node.setVendor(string((char *)rsp_buff + 8, 8));
-  if (len > 16)
-    node.setProduct(string((char *)rsp_buff + 16, 16));
-  if (len > 32)
-    node.setVersion(string((char *)rsp_buff + 32, 4));
-
-  if (ansiversion)
-    node.setConfig("ansiversion", tostring(ansiversion));
+  parse_inq_1(rsp_buff, len, node);
 
   memset(rsp_buff, 0, sizeof(rsp_buff));
   if (do_inq(sg_fd, 0, 1, 0x80, rsp_buff, MX_ALLOC_LEN, 0))
   {
-    uint8_t _len = rsp_buff[3];
-    if (_len > 0)
-      node.setSerial(hw::strip(string((char *)rsp_buff + 4, _len)));
+    parse_inq_2(rsp_buff, len, node);
   }
 
   memset(rsp_buff, 0, sizeof(rsp_buff));
@@ -657,6 +666,33 @@ static bool atapi(const hwNode & n)
   return n.isCapable("atapi") && (n.countChildren() == 0);
 }
 
+hwNode get_scsi_device(int type)
+{
+  switch (type)
+  {
+    case 0:
+    case 14:
+    case 20:
+      return hwNode("disk", hw::disk);
+    case 1:
+      return hwNode("tape", hw::tape);
+    case 3:
+      return hwNode("processor", hw::processor);
+    case 4:
+    case 5:
+      return hwNode("cdrom", hw::disk);
+    case 6:
+      return hwNode("scanner", hw::generic);
+    case 7:
+      return hwNode("magnetooptical", hw::disk);
+    case 8:
+      return hwNode("changer", hw::generic);
+    case 0xd:
+      return hwNode("enclosure", hw::generic);
+    default:
+      return hwNode("generic");
+  }
+}
 
 static void scan_sg(hwNode & n)
 {
@@ -703,39 +739,8 @@ static void scan_sg(hwNode & n)
       sysfs::entry::byClass("scsi_host", host_kname(m_id.host_no))
       .parent().businfo();
 
-  hwNode device = hwNode("generic");
+  hwNode device = get_scsi_device(m_id.scsi_type);
   hwNode *parent = NULL;
-
-  switch (m_id.scsi_type)
-  {
-    case 0:
-    case 14:
-    case 20:
-      device = hwNode("disk", hw::disk);
-      break;
-    case 1:
-      device = hwNode("tape", hw::tape);
-      break;
-    case 3:
-      device = hwNode("processor", hw::processor);
-      break;
-    case 4:
-    case 5:
-      device = hwNode("cdrom", hw::disk);
-      break;
-    case 6:
-      device = hwNode("scanner", hw::generic);
-      break;
-    case 7:
-      device = hwNode("magnetooptical", hw::disk);
-      break;
-    case 8:
-      device = hwNode("changer", hw::generic);
-      break;
-    case 0xd:
-      device = hwNode("enclosure", hw::generic);
-      break;
-  }
 
   device.setDescription(string(scsi_type(m_id.scsi_type)));
   device.setHandle(scsi_handle(m_id.host_no,
